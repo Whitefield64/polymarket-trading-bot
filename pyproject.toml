@@ -1,0 +1,26 @@
+[project]
+name = "polymarket-trading-bot"
+version = "0.1.0"
+description = "Polymarket trading bot for 5/15-min crypto markets"
+requires-python = ">=3.11"
+dependencies = [
+    "eth-account>=0.13.7",
+    "matplotlib>=3.10.8",
+    "pandas>=3.0.2",
+    "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
+    "requests>=2.33.1",
+    "web3>=7.14.1",
+    "websockets>=12.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "playwright>=1.49.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
