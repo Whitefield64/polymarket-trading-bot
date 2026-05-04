@@ -33,22 +33,7 @@ from src.websocket_client import MarketWebSocket
 DATA_DIR = Path(__file__).parent.parent / "datasets"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- 1. Market Discovery ---
-def get_current_5m_market() -> dict | None:
-    client = GammaClient()
-    now = datetime.now(timezone.utc)
-    minute = (now.minute // 5) * 5
-    window = now.replace(minute=minute, second=0, microsecond=0)
-    base_ts = int(window.timestamp())
-    
-    slug = f"btc-updown-5m-{base_ts}"
-    market = client.get_market_by_slug(slug)
-    
-    if market and market.get("acceptingOrders"):
-        return market
-    return None
-
-# --- 2. Vatic API Target Scraper ---
+# --- 1. Vatic API Target Scraper ---
 async def wait_for_vatic_target(start_ts_sec: int) -> float:
     """Polls the 3rd-party Vatic API used by professional bots for the exact target price."""
     url = f"https://api.vatic.trading/api/v1/targets/timestamp?asset=btc&type=5min&timestamp={start_ts_sec}"
@@ -195,7 +180,7 @@ async def main():
                 await asyncio.sleep(60 * wait_min)
                 continue
 
-            market = get_current_5m_market()
+            market = GammaClient().get_current_5m_btc_market()
             
             if market:
                 await record_market_session(market, btc_state)

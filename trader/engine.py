@@ -392,7 +392,11 @@ class TraderEngine:
 
     def _save_and_summarise(self) -> None:
         if self.save_ticks and self._report.tick_log:
-            out = self._report.save(Path("experiments/paper"))
+            if self.paper_mode:
+                path = Path("experiments/paper")
+            else:
+                path = Path("experiments/live")
+            out = self._report.save(path)
             print(f"\n[engine] Experiment saved → {out}")
         self._report.print_summary()
 

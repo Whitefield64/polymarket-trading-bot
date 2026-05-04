@@ -34,7 +34,6 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List, Callable, TypeVar
 from dataclasses import dataclass, field
-from enum import Enum
 
 from .config import Config, BuilderConfig
 from .signer import OrderSigner, Order
@@ -49,18 +48,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-class OrderSide(str, Enum):
-    """Order side constants."""
-    BUY = "BUY"
-    SELL = "SELL"
-
-
-class OrderType(str, Enum):
-    """Order type constants."""
-    GTC = "GTC"  # Good Till Cancelled
-    GTD = "GTD"  # Good Till Date
-    FOK = "FOK"  # Fill Or Kill
 
 
 @dataclass
@@ -121,8 +108,6 @@ class TradingBot:
         safe_address: Optional[str] = None,
         builder_creds: Optional[BuilderConfig] = None,
         private_key: Optional[str] = None,
-        encrypted_key_path: Optional[str] = None,
-        password: Optional[str] = None,
         api_creds_path: Optional[str] = None,
         log_level: int = logging.INFO
     ):
@@ -189,8 +174,6 @@ class TradingBot:
         # Load private key
         if private_key:
             self.signer = OrderSigner(private_key)
-        elif encrypted_key_path and password:
-            self._load_encrypted_key(encrypted_key_path, password)
 
         # Load API credentials
         if api_creds_path:
@@ -330,41 +313,6 @@ class TradingBot:
                 message=str(e)
             )
 
-    async def place_orders(
-        self,
-        orders: List[Dict[str, Any]],
-        order_type: str = "GTC"
-    ) -> List[OrderResult]:
-        """
-        Place multiple orders.
-
-        Args:
-            orders: List of order dictionaries with keys:
-                - token_id: Market token ID
-                - price: Price per share
-                - size: Number of shares
-                - side: 'BUY' or 'SELL'
-            order_type: Order type (GTC, GTD, FOK)
-
-        Returns:
-            List of OrderResults
-        """
-        results = []
-        for order_data in orders:
-            result = await self.place_order(
-                token_id=order_data["token_id"],
-                price=order_data["price"],
-                size=order_data["size"],
-                side=order_data["side"],
-                order_type=order_type,
-            )
-            results.append(result)
-
-            # Small delay between orders to avoid rate limits
-            await asyncio.sleep(0.1)
-
-        return results
-
     async def cancel_order(self, order_id: str) -> OrderResult:
         """
         Cancel a specific order.
@@ -442,167 +390,3 @@ class TradingBot:
             logger.error(f"Failed to cancel market orders: {e}")
             return OrderResult(success=False, message=str(e))
 
-    async def get_open_orders(self) -> List[Dict[str, Any]]:
-        """
-        Get all open orders.
-
-        Returns:
-            List of open orders
-        """
-        try:
-            orders = await self._run_in_thread(self.clob_client.get_open_orders)
-            logger.debug(f"Retrieved {len(orders)} open orders")
-            return orders
-        except Exception as e:
-            logger.error(f"Failed to get open orders: {e}")
-            return []
-
-    async def get_order(self, order_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get order details.
-
-        Args:
-            order_id: Order ID
-
-        Returns:
-            Order details or None
-        """
-        try:
-            return await self._run_in_thread(self.clob_client.get_order, order_id)
-        except Exception as e:
-            logger.error(f"Failed to get order {order_id}: {e}")
-            return None
-
-    async def get_trades(
-        self,
-        token_id: Optional[str] = None,
-        limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """
-        Get trade history.
-
-        Args:
-            token_id: Optional token ID to filter
-            limit: Maximum number of trades
-
-        Returns:
-            List of trades
-        """
-        try:
-            trades = await self._run_in_thread(self.clob_client.get_trades, token_id, limit)
-            logger.debug(f"Retrieved {len(trades)} trades")
-            return trades
-        except Exception as e:
-            logger.error(f"Failed to get trades: {e}")
-            return []
-
-    async def get_order_book(self, token_id: str) -> Dict[str, Any]:
-        """
-        Get order book for a token.
-
-        Args:
-            token_id: Market token ID
-
-        Returns:
-            Order book data
-        """
-        try:
-            return await self._run_in_thread(self.clob_client.get_order_book, token_id)
-        except Exception as e:
-            logger.error(f"Failed to get order book: {e}")
-            return {}
-
-    async def get_market_price(self, token_id: str, side: str) -> Dict[str, Any]:
-        """
-        Get current market price for a token.
-
-        Args:
-            token_id: Market token ID
-            side: Order side ("BUY" or "SELL")
-
-        Returns:
-            Price data
-        """
-        try:
-            return await self._run_in_thread(self.clob_client.get_market_price, token_id, side)
-        except Exception as e:
-            logger.error(f"Failed to get market price: {e}")
-            return {}
-
-    async def deploy_safe_if_needed(self) -> bool:
-        """
-        Deploy Safe proxy wallet if not already deployed.
-
-        Returns:
-            True if deployment was needed or successful
-        """
-        if not self.config.use_gasless or not self.relayer_client:
-            logger.debug("Gasless not enabled, skipping Safe deployment")
-            return False
-
-        try:
-            response = await self._run_in_thread(
-                self.relayer_client.deploy_safe,
-                self.config.safe_address,
-            )
-            logger.info(f"Safe deployment initiated: {response}")
-            return True
-        except Exception as e:
-            logger.warning(f"Safe deployment failed (may already be deployed): {e}")
-            return False
-
-    def create_order_dict(
-        self,
-        token_id: str,
-        price: float,
-        size: float,
-        side: str
-    ) -> Dict[str, Any]:
-        """
-        Create an order dictionary for batch processing.
-
-        Args:
-            token_id: Market token ID
-            price: Price per share
-            size: Number of shares
-            side: 'BUY' or 'SELL'
-
-        Returns:
-            Order dictionary
-        """
-        return {
-            "token_id": token_id,
-            "price": price,
-            "size": size,
-            "side": side.upper(),
-        }
-
-
-# Convenience function for quick initialization
-def create_bot(
-    config_path: str = "config.yaml",
-    private_key: Optional[str] = None,
-    encrypted_key_path: Optional[str] = None,
-    password: Optional[str] = None,
-    **kwargs
-) -> TradingBot:
-    """
-    Create a TradingBot instance with common options.
-
-    Args:
-        config_path: Path to config file
-        private_key: Private key (with 0x prefix)
-        encrypted_key_path: Path to encrypted key file
-        password: Password for encrypted key
-        **kwargs: Additional arguments for TradingBot
-
-    Returns:
-        Configured TradingBot instance
-    """
-    return TradingBot(
-        config_path=config_path,
-        private_key=private_key,
-        encrypted_key_path=encrypted_key_path,
-        password=password,
-        **kwargs
-    )

@@ -30,9 +30,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# WebSocket endpoints
+# WebSocket endpoint
 WSS_MARKET_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-WSS_USER_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 
 
 def _load_websockets():
@@ -112,60 +111,8 @@ class OrderbookSnapshot:
         )
 
 
-@dataclass
-class PriceChange:
-    """Price change event."""
-    asset_id: str
-    price: float
-    size: float
-    side: str
-    best_bid: float
-    best_ask: float
-    hash: str = ""
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PriceChange":
-        """Create from price_change dict."""
-        return cls(
-            asset_id=data.get("asset_id", ""),
-            price=float(data.get("price", 0)),
-            size=float(data.get("size", 0)),
-            side=data.get("side", ""),
-            best_bid=float(data.get("best_bid", 0)),
-            best_ask=float(data.get("best_ask", 1)),
-            hash=data.get("hash", ""),
-        )
-
-
-@dataclass
-class LastTradePrice:
-    """Last trade price event."""
-    asset_id: str
-    market: str
-    price: float
-    size: float
-    side: str
-    timestamp: int
-    fee_rate_bps: int = 0
-
-    @classmethod
-    def from_message(cls, msg: Dict[str, Any]) -> "LastTradePrice":
-        """Create from last_trade_price message."""
-        return cls(
-            asset_id=msg.get("asset_id", ""),
-            market=msg.get("market", ""),
-            price=float(msg.get("price", 0)),
-            size=float(msg.get("size", 0)),
-            side=msg.get("side", ""),
-            timestamp=int(msg.get("timestamp", 0)),
-            fee_rate_bps=int(msg.get("fee_rate_bps", 0)),
-        )
-
-
 # Type aliases for callbacks
 BookCallback = Callable[[OrderbookSnapshot], Union[None, Awaitable[None]]]
-PriceChangeCallback = Callable[[str, List[PriceChange]], Union[None, Awaitable[None]]]
-TradeCallback = Callable[[LastTradePrice], Union[None, Awaitable[None]]]
 ErrorCallback = Callable[[Exception], None]
 
 
@@ -222,8 +169,6 @@ class MarketWebSocket:
 
         # Callbacks
         self._on_book: Optional[BookCallback] = None
-        self._on_price_change: Optional[PriceChangeCallback] = None
-        self._on_trade: Optional[TradeCallback] = None
         self._on_error: Optional[ErrorCallback] = None
         self._on_connect: Optional[Callable[[], None]] = None
         self._on_disconnect: Optional[Callable[[], None]] = None
@@ -263,16 +208,6 @@ class MarketWebSocket:
     def on_book(self, callback: BookCallback) -> BookCallback:
         """Decorator to set book update callback."""
         self._on_book = callback
-        return callback
-
-    def on_price_change(self, callback: PriceChangeCallback) -> PriceChangeCallback:
-        """Decorator to set price change callback."""
-        self._on_price_change = callback
-        return callback
-
-    def on_trade(self, callback: TradeCallback) -> TradeCallback:
-        """Decorator to set trade callback."""
-        self._on_trade = callback
         return callback
 
     def on_error(self, callback: ErrorCallback) -> ErrorCallback:
@@ -370,65 +305,6 @@ class MarketWebSocket:
                 self._on_error(e)
             return False
 
-    async def subscribe_more(self, asset_ids: List[str]) -> bool:
-        """
-        Subscribe to additional assets.
-
-        Args:
-            asset_ids: Additional token IDs to subscribe to
-
-        Returns:
-            True if subscription sent successfully
-        """
-        if not asset_ids:
-            return False
-
-        self._subscribed_assets.update(asset_ids)
-
-        if not self.is_connected:
-            return True
-
-        subscribe_msg = {
-            "assets_ids": asset_ids,
-            "operation": "subscribe",
-        }
-
-        try:
-            await self._ws.send(json.dumps(subscribe_msg))
-            logger.info(f"Subscribed to {len(asset_ids)} additional assets")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to subscribe: {e}")
-            return False
-
-    async def unsubscribe(self, asset_ids: List[str]) -> bool:
-        """
-        Unsubscribe from assets.
-
-        Args:
-            asset_ids: Token IDs to unsubscribe from
-
-        Returns:
-            True if unsubscription sent successfully
-        """
-        if not self.is_connected or not asset_ids:
-            return False
-
-        self._subscribed_assets.difference_update(asset_ids)
-
-        unsubscribe_msg = {
-            "assets_ids": asset_ids,
-            "operation": "unsubscribe",
-        }
-
-        try:
-            await self._ws.send(json.dumps(unsubscribe_msg))
-            logger.info(f"Unsubscribed from {len(asset_ids)} assets")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to unsubscribe: {e}")
-            return False
-
     async def _handle_message(self, data: Dict[str, Any]) -> None:
         """Handle incoming WebSocket message."""
         event_type = data.get("event_type", "")
@@ -439,23 +315,6 @@ class MarketWebSocket:
             self._orderbooks[snapshot.asset_id] = snapshot
             logger.debug(f"Book update for {snapshot.asset_id[:20]}...: mid={snapshot.mid_price:.4f}")
             await self._run_callback(self._on_book, snapshot, label="book")
-
-        elif event_type == "price_change":
-            market = data.get("market", "")
-            changes = [
-                PriceChange.from_dict(pc)
-                for pc in data.get("price_changes", [])
-            ]
-            await self._run_callback(
-                self._on_price_change,
-                market,
-                changes,
-                label="price_change",
-            )
-
-        elif event_type == "last_trade_price":
-            trade = LastTradePrice.from_message(data)
-            await self._run_callback(self._on_trade, trade, label="trade")
 
         elif event_type == "tick_size_change":
             # Log but don't handle specially
@@ -551,112 +410,8 @@ class MarketWebSocket:
             else:
                 break
 
-    async def run_until_cancelled(self) -> None:
-        """Run until cancelled or stopped."""
-        try:
-            await self.run(auto_reconnect=True)
-        except asyncio.CancelledError:
-            await self.disconnect()
-
     def stop(self) -> None:
         """Stop the WebSocket client."""
         self._running = False
 
 
-class OrderbookManager:
-    """
-    High-level orderbook manager with WebSocket subscription.
-
-    Provides a simpler interface for tracking multiple orderbooks
-    with callbacks for price updates.
-
-    Example:
-        manager = OrderbookManager()
-
-        @manager.on_price_update
-        async def handle_price(asset_id: str, mid_price: float):
-            print(f"{asset_id}: {mid_price}")
-
-        await manager.start(["token_1", "token_2"])
-    """
-
-    def __init__(self):
-        """Initialize orderbook manager."""
-        self._ws = MarketWebSocket()
-        self._price_callback: Optional[Callable[[str, float, float, float], None]] = None
-        self._connected = False
-
-        # Set up internal callbacks
-        @self._ws.on_book
-        async def on_book(snapshot: OrderbookSnapshot):
-            if self._price_callback:
-                try:
-                    result = self._price_callback(
-                        snapshot.asset_id,
-                        snapshot.mid_price,
-                        snapshot.best_bid,
-                        snapshot.best_ask
-                    )
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception as e:
-                    logger.error(f"Error in price callback: {e}")
-
-        @self._ws.on_connect
-        def on_connect():  # pyright: ignore[reportUnusedFunction]
-            self._connected = True
-
-        @self._ws.on_disconnect
-        def on_disconnect():  # pyright: ignore[reportUnusedFunction]
-            self._connected = False
-
-    @property
-    def is_connected(self) -> bool:
-        """Check if connected."""
-        return self._connected
-
-    def get_price(self, asset_id: str) -> float:
-        """Get current mid price for asset."""
-        return self._ws.get_mid_price(asset_id)
-
-    def get_orderbook(self, asset_id: str) -> Optional[OrderbookSnapshot]:
-        """Get cached orderbook for asset."""
-        return self._ws.get_orderbook(asset_id)
-
-    def on_price_update(
-        self,
-        callback: Callable[[str, float, float, float], None]
-    ) -> Callable[[str, float, float, float], None]:
-        """
-        Set callback for price updates.
-
-        Callback receives: asset_id, mid_price, best_bid, best_ask
-        """
-        self._price_callback = callback
-        return callback
-
-    async def start(self, asset_ids: List[str]) -> None:
-        """
-        Start tracking orderbooks.
-
-        Args:
-            asset_ids: Token IDs to track
-        """
-        await self._ws.subscribe(asset_ids)
-        await self._ws.run(auto_reconnect=True)
-
-    async def subscribe(self, asset_ids: List[str]) -> bool:
-        """Subscribe to additional assets."""
-        return await self._ws.subscribe_more(asset_ids)
-
-    async def unsubscribe(self, asset_ids: List[str]) -> bool:
-        """Unsubscribe from assets."""
-        return await self._ws.unsubscribe(asset_ids)
-
-    def stop(self) -> None:
-        """Stop the manager."""
-        self._ws.stop()
-
-    async def close(self) -> None:
-        """Close connection."""
-        await self._ws.disconnect()

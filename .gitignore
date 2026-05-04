@@ -53,14 +53,11 @@ yarn-error.log*
 
 # directories
 .claude/
-lib/
 datasets/
-/experiments
+experiments/
+!experiments/interesting/
+!experiments/interesting/**
 
 # Removed from repo but kept locally
-testing/tmp.ipynb
 testing/data_retriever.ipynb
 testing/btc_history_analysis.ipynb
-testing/examples/
-docs/developers/CTF/
-docs/developers/neg-risk/
