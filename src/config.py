@@ -96,6 +96,7 @@ class BuilderConfig:
     api_key: str = ""
     api_secret: str = ""
     api_passphrase: str = ""
+    builder_code: str = ""  # bytes32 hex from Polymarket UI → Codici builder
 
     def is_configured(self) -> bool:
         """Check if Builder credentials are configured."""
@@ -228,6 +229,7 @@ class Config:
                 api_key=builder_data.get("api_key", ""),
                 api_secret=builder_data.get("api_secret", ""),
                 api_passphrase=builder_data.get("api_passphrase", ""),
+                builder_code=builder_data.get("builder_code", ""),
             )
 
         # Trading defaults
@@ -286,11 +288,13 @@ class Config:
         api_key = get_env("BUILDER_API_KEY")
         api_secret = get_env("BUILDER_API_SECRET")
         api_passphrase = get_env("BUILDER_API_PASSPHRASE")
+        builder_code = get_env("BUILDER_CODE")
         if api_key or api_secret or api_passphrase:
             config.builder = BuilderConfig(
                 api_key=api_key,
                 api_secret=api_secret,
                 api_passphrase=api_passphrase,
+                builder_code=builder_code,
             )
 
         # CLOB config

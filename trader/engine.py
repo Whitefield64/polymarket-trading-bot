@@ -436,7 +436,6 @@ class TraderEngine:
                     price=round(price + 0.01, 2),
                     size=round(self.size_usdc / price, 4),
                     side="BUY",
-                    fee_rate_bps=1000,
                 )
                 if result.success:
                     self._sim.open("up", price, state.time_left)
@@ -452,7 +451,6 @@ class TraderEngine:
                     price=round(price + 0.01, 2),
                     size=round(self.size_usdc / price, 4),
                     side="BUY",
-                    fee_rate_bps=1000,
                 )
                 if result.success:
                     self._sim.open("down", price, state.time_left)
@@ -473,7 +471,6 @@ class TraderEngine:
                     price=round(exit_price - 0.01, 2),
                     size=round(pos.shares, 4),
                     side="SELL",
-                    fee_rate_bps=1000,
                 )
                 if result.success:
                     self._sim.close("close_signal", exit_price, state.time_left)

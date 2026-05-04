@@ -52,7 +52,7 @@ def predict_single(time_left: float, spread: float, sigma: float = DEFAULT_SIGMA
 @dataclass
 class EdgeExitConfig:
     sigma: float = DEFAULT_SIGMA
-    min_edge: float = 0.50
+    min_edge: float = 0.5
     min_time_left: int = 10
     max_time_left: int = 290
 

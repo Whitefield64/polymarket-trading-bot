@@ -36,7 +36,7 @@ from typing import Optional, Dict, Any, List, Callable, TypeVar
 from dataclasses import dataclass, field
 
 from .config import Config, BuilderConfig
-from .signer import OrderSigner, Order
+from .signer import OrderSigner, Order, BYTES32_ZERO
 from .client import ClobClient, RelayerClient, ApiCredentials
 
 
@@ -260,7 +260,6 @@ class TradingBot:
         size: float,
         side: str,
         order_type: str = "GTC",
-        fee_rate_bps: int = 0
     ) -> OrderResult:
         """
         Place a limit order.
@@ -271,7 +270,6 @@ class TradingBot:
             size: Number of shares
             side: 'BUY' or 'SELL'
             order_type: Order type (GTC, GTD, FOK)
-            fee_rate_bps: Fee rate in basis points
 
         Returns:
             OrderResult with order status
@@ -286,7 +284,7 @@ class TradingBot:
                 size=size,
                 side=side,
                 maker=self.config.safe_address,
-                fee_rate_bps=fee_rate_bps,
+                builder=self.config.builder.builder_code or BYTES32_ZERO,
             )
 
             # Sign order

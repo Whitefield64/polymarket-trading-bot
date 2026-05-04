@@ -30,14 +30,17 @@ from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
 
 
-# USDC has 6 decimal places
+# pUSD has 6 decimal places (same as USDC)
 USDC_DECIMALS = 6
+
+# Zero bytes32 for optional V2 fields
+BYTES32_ZERO = "0x" + "00" * 32
 
 
 @dataclass
 class Order:
     """
-    Represents a Polymarket order.
+    Represents a Polymarket V2 order.
 
     Attributes:
         token_id: The ERC-1155 token ID for the market outcome
@@ -45,18 +48,22 @@ class Order:
         size: Number of shares
         side: Order side ('BUY' or 'SELL')
         maker: The maker's wallet address (Safe/Proxy)
-        nonce: Unique order nonce (usually timestamp)
-        fee_rate_bps: Fee rate in basis points (usually 0)
         signature_type: Signature type (2 = Gnosis Safe)
+        timestamp: Order creation time in milliseconds (defaults to now)
+        metadata: Optional bytes32 metadata (hex string)
+        builder: Optional bytes32 builder identifier (hex string)
+        expiration: Order expiration (wire-only, not signed; "0" = no expiry)
     """
     token_id: str
     price: float
     size: float
     side: str
     maker: str
-    nonce: Optional[int] = None
-    fee_rate_bps: int = 0
     signature_type: int = 2
+    timestamp: Optional[int] = None
+    metadata: str = BYTES32_ZERO
+    builder: str = BYTES32_ZERO
+    expiration: str = "0"
 
     def __post_init__(self):
         """Validate and normalize order parameters."""
@@ -70,8 +77,8 @@ class Order:
         if self.size <= 0:
             raise ValueError(f"Invalid size: {self.size}")
 
-        if self.nonce is None:
-            self.nonce = 0
+        if self.timestamp is None:
+            self.timestamp = int(time.time() * 1000)  # milliseconds
 
         # Compute tick-aligned amounts matching the official py-clob-client:
         # 1. Round size to 2 decimal places first.
@@ -123,11 +130,11 @@ class OrderSigner:
         "chainId": 137,
     }
 
-    # EIP-712 domain for order signing — must match the CTF Exchange contract
-    CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+    # EIP-712 domain for order signing — CTF Exchange V2 (deployed April 28 2026)
+    CTF_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
     ORDER_DOMAIN = {
         "name": "Polymarket CTF Exchange",
-        "version": "1",
+        "version": "2",
         "chainId": 137,
         "verifyingContract": CTF_EXCHANGE_ADDRESS,
     }
@@ -135,21 +142,22 @@ class OrderSigner:
     # Keep DOMAIN as alias for auth (backwards compat with sign_auth_message)
     DOMAIN = AUTH_DOMAIN
 
-    # Order type definition for EIP-712
+    # V2 order type definition for EIP-712
+    # Removed vs V1: taker, expiration, nonce, feeRateBps
+    # Added vs V1: timestamp, metadata, builder
     ORDER_TYPES = {
         "Order": [
             {"name": "salt", "type": "uint256"},
             {"name": "maker", "type": "address"},
             {"name": "signer", "type": "address"},
-            {"name": "taker", "type": "address"},
             {"name": "tokenId", "type": "uint256"},
             {"name": "makerAmount", "type": "uint256"},
             {"name": "takerAmount", "type": "uint256"},
-            {"name": "expiration", "type": "uint256"},
-            {"name": "nonce", "type": "uint256"},
-            {"name": "feeRateBps", "type": "uint256"},
             {"name": "side", "type": "uint8"},
             {"name": "signatureType", "type": "uint8"},
+            {"name": "timestamp", "type": "uint256"},
+            {"name": "metadata", "type": "bytes32"},
+            {"name": "builder", "type": "bytes32"},
         ]
     }
 
@@ -235,53 +243,59 @@ class OrderSigner:
         try:
             import random
             salt = random.randint(1, 2**32)
-            taker = "0x0000000000000000000000000000000000000000"
             maker = to_checksum_address(order.maker)
 
-            # Build order message for EIP-712 signing (uses integer types)
-            order_message = {
-                "salt": salt,
-                "maker": maker,
-                "signer": self.address,
-                "taker": taker,
-                "tokenId": int(order.token_id),
-                "makerAmount": int(order.maker_amount),
-                "takerAmount": int(order.taker_amount),
-                "expiration": 0,
-                "nonce": order.nonce,
-                "feeRateBps": order.fee_rate_bps,
-                "side": order.side_value,
-                "signatureType": order.signature_type,
+            def _hex_to_bytes32(hex_str: str) -> bytes:
+                return bytes.fromhex(hex_str.replace("0x", "").zfill(64))
+
+            # V2 signed struct: no taker/expiration/nonce/feeRateBps
+            # New fields: timestamp (ms), metadata (bytes32), builder (bytes32)
+            typed_data = {
+                "primaryType": "Order",
+                "types": {
+                    "EIP712Domain": [
+                        {"name": "name", "type": "string"},
+                        {"name": "version", "type": "string"},
+                        {"name": "chainId", "type": "uint256"},
+                        {"name": "verifyingContract", "type": "address"},
+                    ],
+                    "Order": self.ORDER_TYPES["Order"],
+                },
+                "domain": self.ORDER_DOMAIN,
+                "message": {
+                    "salt": salt,
+                    "maker": maker,
+                    "signer": self.address,
+                    "tokenId": int(order.token_id),
+                    "makerAmount": int(order.maker_amount),
+                    "takerAmount": int(order.taker_amount),
+                    "side": order.side_value,
+                    "signatureType": order.signature_type,
+                    "timestamp": order.timestamp,
+                    "metadata": _hex_to_bytes32(order.metadata),
+                    "builder": _hex_to_bytes32(order.builder),
+                },
             }
 
-            signable = encode_typed_data(
-                domain_data=self.ORDER_DOMAIN,
-                message_types=self.ORDER_TYPES,
-                message_data=order_message
-            )
-
+            signable = encode_typed_data(full_message=typed_data)
             signed = self.wallet.sign_message(signable)
-
             signature = "0x" + signed.signature.hex()
 
-            # Build the body the CLOB API expects:
-            # - signature lives INSIDE order
-            # - salt is integer; other uint fields are strings
-            # - side is "BUY"/"SELL" string
+            # V2 wire body: expiration is present but NOT part of the signed struct
             return {
                 "order": {
                     "salt": salt,
                     "maker": maker,
                     "signer": self.address,
-                    "taker": taker,
                     "tokenId": order.token_id,
                     "makerAmount": order.maker_amount,
                     "takerAmount": order.taker_amount,
-                    "expiration": "0",
-                    "nonce": str(order.nonce),
-                    "feeRateBps": str(order.fee_rate_bps),
                     "side": order.side,
+                    "expiration": order.expiration,
                     "signatureType": order.signature_type,
+                    "timestamp": str(order.timestamp),
+                    "metadata": order.metadata,
+                    "builder": order.builder,
                     "signature": signature,
                 },
             }

@@ -526,6 +526,8 @@ class ClobClient(ApiClient):
             "order": signed_order["order"],
             "owner": owner,
             "orderType": order_type,
+            "postOnly": False,
+            "deferExec": False,
         }
 
         body_json = json.dumps(body, separators=(',', ':'))
