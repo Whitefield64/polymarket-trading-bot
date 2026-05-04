@@ -1,298 +1,255 @@
-# Strategy Development Guide
+# Strategy Guide
 
-This guide explains how to build a new trading strategy on top of this repo. Strategies work seamlessly across **backtest**, **paper trading**, and **live trading** modes.
-
-## 1) Architecture Overview
-
-The bot supports three execution modes using the same strategy code:
-
-| Mode | Use Case | Speed | Data Source |
-|------|----------|-------|-------------|
-| **Backtest** | Historical testing, fast iteration | Seconds per 5-min window | CSV files |
-| **Paper Trading** | Live market, no real money | Real-time | WebSocket feed |
-| **Live Trading** | Real money (toggle `PAPER_MODE=false`) | Real-time | WebSocket feed |
-
-Strategy interface:
-- **Input**: `MarketState` — market snapshot (price, spread, mid-prices, position tracking)
-- **Output**: `Decision` — action (BUY_UP, BUY_DOWN, HOLD, SELL) + reasoning
-- **Lifecycle**: `on_tick()` called every second (backtest) or per update (live)
+How to implement, configure, and test a trading strategy in this framework.
 
 ---
 
-## 2) Core Components
+## 1. The interface
 
-### Base Strategy Interface (`strategies/base.py`)
+Every strategy is a Python class that inherits `BaseStrategy` and implements `on_tick()`. The same class runs unchanged in backtest, paper, and live mode.
 
 ```python
-from enum import Enum
-from dataclasses import dataclass
-
-class Action(Enum):
-    """Trading actions available to strategies"""
-    BUY_UP = "buy_up"
-    BUY_DOWN = "buy_down"
-    SELL = "sell"
-    HOLD = "hold"
-
-@dataclass
-class MarketState:
-    """Current market snapshot"""
-    time_left: int          # Seconds remaining in 5-min window (300 → 0)
-    target_btc: float       # Target BTC price locked at window start
-    live_btc: float         # Current real BTC price
-    spread: float           # live_btc - target_btc
-    up_price: float         # UP token mid-price [0, 1]
-    down_price: float       # DOWN token mid-price [0, 1]
-    has_position: bool      # Currently holding a position
-    position_side: str      # "up" or "down" if has_position
-    position_entry: float   # Entry price of current position
-    position_pnl: float     # Unrealized P&L
-    window_id: str          # e.g. "btc-updown-5m-1774979400"
-
-@dataclass
-class Decision:
-    """Strategy decision at each tick"""
-    action: Action
-    reasoning: str          # Always mandatory — appears in logs
-    metrics: Dict[str, float] = None  # Custom metrics for analysis
-```
-
-### Other Reusable Components
-
-- `lib/position_manager.py` — Position tracking with TP/SL helpers
-- `lib/console.py` — Structured logging utilities
-- `backtest/simulator.py` — Binary market math (used automatically in backtest)
-- `src/bot.py` — Order placement (used automatically in live/paper modes)
-
----
-
-## 3) Minimum Setup
-
-### Environment Variables
-
-For **paper/live trading** (backtest needs none):
-
-```bash
-export POLY_PRIVATE_KEY=0xYourPrivateKey
-export POLY_SAFE_ADDRESS=0xYourSafeAddress
-export PAPER_MODE=true  # Set to false for live trading
-```
-
-Optional (gasless mode):
-
-```bash
-export POLY_BUILDER_API_KEY=...
-export POLY_BUILDER_API_SECRET=...
-export POLY_BUILDER_API_PASSPHRASE=...
-```
-
-### Quick Test
-
-```bash
-# Backtest your strategy
-uv run python run_backtest.py --strategy brownian_motion --quiet
-
-# Paper trading (live market, virtual positions)
-uv run python run_paper.py --strategy brownian_motion
-```
-
----
-
-## 4) Strategy Template
-
-Create `strategies/my_strategy.py`:
-
-```python
-from strategies.base import Action, BaseStrategy, Decision, MarketState
-
+from strategies.base import BaseStrategy, MarketState, Decision, Action
 
 class MyStrategy(BaseStrategy):
-    """Simple threshold-based strategy for portfolio"""
-    
     def on_tick(self, state: MarketState) -> Decision:
-        """
-        Called every second (backtest) or per WebSocket update (live).
-        
-        Args:
-            state: Current market snapshot
-            
-        Returns:
-            Decision with action, reasoning, and optional metrics
-        """
-        metrics = {
-            "spread": state.spread,
-            "up_price": state.up_price,
-            "down_price": state.down_price,
-        }
-        
-        # Example: buy UP if spread > 5 and no position
-        if state.spread > 5.0 and not state.has_position:
-            return Decision(
-                action=Action.BUY_UP,
-                reasoning=f"spread={state.spread:.2f} > 5.0 threshold",
-                metrics=metrics
-            )
-        
-        # Example: sell if position is in profit
-        if state.has_position and state.position_pnl > 10.0:
-            return Decision(
-                action=Action.SELL,
-                reasoning=f"position_pnl={state.position_pnl:.2f} — take profit",
-                metrics=metrics
-            )
-        
-        return Decision(
-            action=Action.HOLD,
-            reasoning="waiting for signal",
-            metrics=metrics
-        )
-    
-    def on_start(self, window_id: str):
-        """Optional: called at the start of each 5-min window"""
-        pass
-    
-    def on_end(self, window_id: str, outcome: str):
-        """Optional: called at the end of each window (outcome = 'up' or 'down')"""
-        pass
+        ...
 
-
-# Required for auto-discovery by run_backtest.py and run_paper.py
-STRATEGY_CLASS = MyStrategy
+STRATEGY_CLASS = MyStrategy  # required at the bottom of the file
 ```
 
 ---
 
-## 5) Key Rules
+## 2. MarketState
 
-1. **`on_tick()` must be synchronous** — no async/await, no blocking I/O
-2. **`Decision.reasoning` is mandatory** — appears in every tick log
-3. **`Decision.metrics` dict** — becomes extra columns in `ticks.csv` during backtest
-4. **Do NOT import** `backtest/` or `trader/` modules inside your strategy — the engine handles execution
-5. **MarketState fields are read-only** — compute your own derived metrics
-6. **Position management** — use `state.has_position`, `state.position_side`, `state.position_pnl` to track status
+`on_tick()` receives a `MarketState` on every tick (once per second in backtest; per WebSocket update in live). All fields are read-only.
+
+```python
+@dataclass
+class MarketState:
+    # Core market data
+    time_left:    int    # seconds remaining in the window (counts 300 → 0)
+    target_btc:   float  # strike price locked at window open (from Vatic API)
+    live_btc:     float  # current BTC price (from Chainlink WebSocket)
+    spread:       float  # live_btc - target_btc (positive = BTC above strike)
+    up_price:     float  # UP token market price — the market's P(UP) ∈ [0, 1]
+    down_price:   float  # DOWN token market price — the market's P(DOWN) ∈ [0, 1]
+
+    # Position context (injected by the engine)
+    has_position:   bool  = False
+    position_side:  str   = None    # "up" or "down"
+    position_entry: float = 0.0     # token price at entry
+    position_pnl:   float = 0.0     # unrealized PnL at current prices
+
+    window_id: str = ""   # e.g. "btc-updown-5m-1774979400"
+```
+
+**Useful invariants:**
+- `spread > 0` means BTC is currently above the strike → UP is more likely
+- `up_price + down_price` ≈ 1.0 (small difference due to fees)
+- At `time_left == 0`, any open position is settled by the engine at the final spread
+- The engine will call `HOLD` automatically if `live_btc`, `target_btc`, `up_price`, or `down_price` are zero
 
 ---
 
-## 6) Running Your Strategy
+## 3. Decision
 
-### Backtest
+`on_tick()` must always return a `Decision`. Never return `None`.
+
+```python
+@dataclass
+class Decision:
+    action:    Action          # what to do this tick
+    reasoning: str             # mandatory — logged every second in ticks.csv
+    metrics:   dict = {}       # optional — extra columns in ticks.csv
+    price:     float = None    # None = use current mid-price
+    size:      float = 0.0     # USDC; 0 = use default from config
+```
+
+`reasoning` is logged every second. Write it as a human-readable string so you can understand each tick when debugging:
+```python
+f"edge_up={edge_up:+.4f} > min_edge={self.cfg.min_edge} → BUY_UP"
+```
+
+`metrics` is a free-form dict. Any key you add here becomes an extra column in `ticks.csv`. Use it for any computed value you want to inspect:
+```python
+metrics = {"p_up": 0.67, "sigma_tau": 12.3, "z_score": 1.4}
+```
+
+---
+
+## 4. Action
+
+```python
+class Action(str, Enum):
+    BUY_UP   = "BUY_UP"    # open a long-UP position
+    BUY_DOWN = "BUY_DOWN"  # open a long-DOWN position
+    CLOSE    = "CLOSE"     # close the current position early
+    HOLD     = "HOLD"      # do nothing
+```
+
+**Engine rules:**
+- You can hold at most one position per window
+- If you return `BUY_UP`/`BUY_DOWN` while already in a position, it is ignored
+- `CLOSE` while not in a position is also ignored
+- Positions not closed manually are settled by the engine at window end
+
+---
+
+## 5. Optional hooks
+
+```python
+def on_start(self, window_id: str) -> None:
+    """Called once at the beginning of each 5-minute window."""
+    pass
+
+def on_end(self, window_id: str, outcome: str) -> None:
+    """Called at window close with the actual result. outcome = "up" or "down"."""
+    pass
+```
+
+Use `on_start` to reset per-window accumulators (e.g. rolling mean, trade count).
+Use `on_end` to log win/loss streaks or adapt internal parameters across windows.
+
+---
+
+## 6. Configuration pattern
+
+Store strategy parameters in a dataclass and assign it to `self.cfg`. The base class picks it up automatically and saves it to `summary.json`.
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class MyConfig:
+    threshold:     float = 0.05
+    min_time_left: int   = 30
+    max_time_left: int   = 290
+
+class MyStrategy(BaseStrategy):
+    def __init__(self, config: MyConfig = MyConfig()):
+        self.cfg = config
+```
+
+---
+
+## 7. Rules
+
+- `on_tick()` must be **synchronous** — no `async`, no blocking I/O, no network calls
+- Do not import from `backtest/` or `trader/` — those layers call you, not the reverse
+- Keep all mutable state on `self` — the engine creates one instance per run and reuses it across windows
+
+---
+
+## 8. Minimal working example
+
+```python
+from dataclasses import dataclass
+from strategies.base import Action, BaseStrategy, Decision, MarketState
+
+@dataclass
+class ThresholdConfig:
+    spread_threshold: float = 10.0  # enter when |spread| exceeds this (USD)
+    min_time_left:    int   = 30
+
+class ThresholdStrategy(BaseStrategy):
+    def __init__(self, config: ThresholdConfig = ThresholdConfig()):
+        self.cfg = config
+
+    def on_tick(self, state: MarketState) -> Decision:
+        t  = state.time_left
+        sp = state.spread
+
+        # Exit: hold until settlement (no early exit logic)
+        if state.has_position:
+            return Decision(
+                Action.HOLD,
+                f"holding {state.position_side} | pnl={state.position_pnl:+.4f}",
+            )
+
+        # Time guard
+        if t < self.cfg.min_time_left:
+            return Decision(Action.HOLD, f"t={t} < min_time_left={self.cfg.min_time_left}")
+
+        # Entry
+        if sp > self.cfg.spread_threshold:
+            return Decision(
+                Action.BUY_UP,
+                f"spread={sp:+.2f} > {self.cfg.spread_threshold} → BUY_UP",
+            )
+        if sp < -self.cfg.spread_threshold:
+            return Decision(
+                Action.BUY_DOWN,
+                f"spread={sp:+.2f} < -{self.cfg.spread_threshold} → BUY_DOWN",
+            )
+
+        return Decision(Action.HOLD, f"spread={sp:+.2f} inside band ±{self.cfg.spread_threshold}")
+
+STRATEGY_CLASS = ThresholdStrategy
+```
+
+See `strategies/example_threshold.py` for the full version. See `strategies/brownian_motion.py` for a production-quality example with profit-take, edge-gone exit, and per-tick metrics.
+
+---
+
+## 9. Testing pipeline
+
+
+### Step 1 — Backtest on historical data
 
 ```bash
-# Run over all historical windows
 uv run python run_backtest.py --strategy my_strategy
-
-# Quiet mode (summary only)
-uv run python run_backtest.py --strategy my_strategy --quiet
-
-# Specific date range
-uv run python run_backtest.py --strategy my_strategy --start 1774979400 --end 1775016900
 ```
 
-Output → `experiments/MyStrategy_{timestamp}/`:
-- `ticks.csv` — one row per second with all metrics + actions
-- `summary.json` — aggregate stats (win rate, total PnL, max drawdown)
+Runs your strategy on all 635+ CSVs in `datasets/`. Results are saved to `experiments/backtest/MyStrategy_{timestamp}/`:
+- `ticks.csv` — one row per second: full MarketState + action + reasoning + metrics
+- `summary.json` — aggregate stats: win_rate, total_pnl, avg_pnl, max_drawdown, num_trades, params
 
-### Paper / Live Trading
+Useful flags:
+```bash
+--quiet              # print only the final summary, not per-window logs
+--size 5.0           # USDC per trade (default: 1.0)
+--start 1774979400   # backtest from this Unix timestamp
+--end   1775016900   # backtest up to this Unix timestamp
+```
+
+### Step 2 — Paper trade against live prices
 
 ```bash
-# Paper trading (PAPER_MODE=true in .env)
-uv run python run_paper.py --strategy my_strategy
-
-# Live trading (set PAPER_MODE=false first)
 uv run python run_paper.py --strategy my_strategy
 ```
 
-Output → `experiments/` folder with timestamp-named results.
+Connects to Polymarket via WebSocket. Your strategy receives live `MarketState` ticks — identical interface to backtest. No money is spent. Results saved to `experiments/paper/`.
+
+Add `--continuous` to run across multiple windows without stopping:
+```bash
+uv run python run_paper.py --strategy my_strategy --continuous
+```
+
+### Step 3 — Live trading
+
+Set `PAPER_MODE=false` in `.env`. Run `run_paper.py` again. A confirmation prompt appears before any real orders are placed.
+
+**Always validate in backtest and paper before going live.** The strategy code is identical across all three modes — only the execution layer changes.
 
 ---
 
-## 7) Workflow: From Idea to Portfolio-Ready
+## 10. Reading backtest output
 
-1. **Draft** your idea in `strategies/my_strategy.py`
-2. **Backtest** to validate on historical data
-3. **Inspect results** using `ticks.csv` + `summary.json`
-4. **Paper trade** for real-time validation (no money at risk)
-5. **Polish** based on observed edge
-6. **Deploy** to live (set `PAPER_MODE=false`) or keep as portfolio piece
+Key fields in `summary.json`:
 
----
-
-## 8) Example: Brownian Motion Strategy
-
-See `strategies/brownian_motion.py` for the current production strategy:
-
-- Uses historical BTC volatility (sigma) to estimate edge
-- Compares calculated probabilities vs market prices
-- Trades only when edge exceeds configured threshold
-- Includes position management (TP/SL)
-
-Read the source and [README.md](../README.md) for the mathematical foundation.
-
-## 7) Trading Helpers
-
-You can place orders two ways:
-
-1) Convenience helpers:
-- `await self.execute_buy(side, price)`
-- `await self.execute_sell(position, price)`
-
-2) Direct bot calls:
-
-```python
-await self.bot.place_order(token_id, price, size, side="BUY")
+```json
+{
+  "strategy": "ThresholdStrategy",
+  "win_rate": 0.72,
+  "total_pnl": 18.4,
+  "avg_pnl": 1.84,
+  "max_drawdown": -3.2,
+  "num_trades": 10,
+  "params": {"spread_threshold": 10.0, "min_time_left": 30}
+}
 ```
 
-If you use direct calls, you should also update `PositionManager` yourself.
+In `ticks.csv`, filter rows where `action != "HOLD"` to see only trade events. Any keys you added to `Decision.metrics` appear as extra columns.
 
-## 8) Risk Controls
-
-Recommended defaults in config:
-
-- `max_positions`: limit exposure
-- `take_profit`: auto exit when up X dollars
-- `stop_loss`: auto exit when down X dollars
-
-Example:
-
-```python
-MyStrategyConfig(
-    max_positions=1,
-    take_profit=0.10,
-    stop_loss=0.05,
-)
-```
-
-## 9) Common Pitfalls
-
-- **Async blocking**: use the existing async API; do not call `requests` directly
-  inside `on_tick`.
-- **Token ID mixups**: use `self.token_ids["up"]` / `self.token_ids["down"]`.
-- **Position sizing**: `execute_buy()` uses `config.size` as USDC size, then
-  converts to shares by `size / price`.
-- **No data yet**: on startup, prices can be `0`. Guard your logic.
-
-## 10) Testing Tips
-
-Unit test signal logic with small inputs. Mock bot calls:
-
-```python
-import pytest
-from unittest.mock import AsyncMock
-
-@pytest.mark.asyncio
-async def test_entry_signal(monkeypatch):
-    bot = AsyncMock()
-    strategy = MyStrategy(bot=bot, config=MyStrategyConfig(entry_price=0.5))
-    await strategy.on_tick({"up": 0.45})
-    assert bot.place_order.called
-```
-
-## 11) Debug Checklist
-
-- Run `python apps/orderbook_tui.py --coin ETH` to confirm data flow.
-- Log `prices` in `on_tick()` to ensure you see updates.
-- Check your Safe address and environment variables.
-
----
-
-If you want, you can copy `strategies/flash_crash.py` and start from there.
+See [EXPERIMENTS.md](../EXPERIMENTS.md) for results analysis and strategy comparisons.

@@ -51,13 +51,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# directories
+# others
+CLAUDE.md
 .claude/
 datasets/
 experiments/
 !experiments/interesting/
 !experiments/interesting/**
-
-# Removed from repo but kept locally
 testing/data_retriever.ipynb
 testing/btc_history_analysis.ipynb
